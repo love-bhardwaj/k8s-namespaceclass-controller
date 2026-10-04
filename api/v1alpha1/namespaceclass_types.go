@@ -24,6 +24,13 @@ import (
 // NamespaceClassResource is an object that a NamespaceClass
 // creates for each namespace.
 type NamespaceClassResource struct {
+	// template is the full object definition to create
+	// the object, required apiVersion, kind and metadata.
+	// Only v1 config is allowed for now.
+	// +kubebuilder:pruning:PreserveUnknownFields
+	// +kubebuilder:validation:EmbeddedResource
+	// +kubebuilder:validation:XValidation:rule="self.apiVersion == 'v1' && self.kind == 'ConfigMap'",message="only v1 ConfigMap is allowed"
+	// +kubebuilder:validation:XValidation:rule="has(self.metadata.name) && self.metadata.name != ''",message="template must set metadata.name"
 	Template runtime.RawExtension `json:"template"`
 }
 

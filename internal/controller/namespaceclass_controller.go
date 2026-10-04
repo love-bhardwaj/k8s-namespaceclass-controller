@@ -27,7 +27,8 @@ import (
 	namespaceclassv1alpha1 "github.com/love-bhardwaj/k8s-namespaceclass-controller/api/v1alpha1"
 )
 
-// NamespaceClassReconciler reconciles a NamespaceClass object
+// NamespaceClassReconciler reconciles a NamespaceClass object. It is used
+// to perform actions when a NamespaceClass resource is deleted.
 type NamespaceClassReconciler struct {
 	client.Client
 	Scheme *runtime.Scheme

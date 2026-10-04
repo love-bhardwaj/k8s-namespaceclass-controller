@@ -25,6 +25,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"time"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -279,8 +280,34 @@ var _ = Describe("Manager", Ordered, func() {
 		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
 		//    strings.ToLower(<Kind>),
 		// ))
+
+		Context("NamespaceClass", Ordered, func() {
+			const ()
+
+			BeforeAll(func() {
+				By("creating custom namespace resources")
+				Expect(applyManifest(createNamespaceClass()))
+			})
+		})
 	})
 })
+
+func applyManifest(manifest string) error {
+	cmd := exec.Command("kubectl", "apply", "-f", "-")
+	cmd.Stdin = strings.NewReader(manifest)
+	_, err := utils.Run(cmd)
+	return err
+}
+
+func createNamespaceClass(name string, resources ...string) string {
+	return fmt.Sprintf(`apiVersion: namespaceclass.lovebhardwaj.io/v1alpha1
+kind: NamespaceClass
+metadata:
+	name: %s
+spec:
+	resources: %s
+`, name, strings.Join(resources, ""))
+}
 
 // serviceAccountToken returns a token for the specified service account in the given namespace.
 // It uses the Kubernetes TokenRequest API to generate a token by directly sending a request
