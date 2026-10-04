@@ -8,4 +8,13 @@ layout:
 - go.kubebuilder.io/v4
 projectName: k8s-namespaceclass-controller
 repo: github.com/love-bhardwaj/k8s-namespaceclass-controller
+resources:
+- api:
+    crdVersion: v1
+  controller: true
+  domain: lovebhardwaj.io
+  group: namespaceclass
+  kind: NamespaceClass
+  path: github.com/love-bhardwaj/k8s-namespaceclass-controller/api/v1alpha1
+  version: v1alpha1
 version: "3"
