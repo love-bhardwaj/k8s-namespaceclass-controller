@@ -39,6 +39,13 @@ spec:
           spec:
             description: spec defines the desired state of NamespaceClass
             properties:
+              pruningOnDelete:
+                default: false
+                description: |-
+                  pruningOnDelete controls what happens to managed objects when this NamespaceClass
+                  is deleted. When true all managed objects managed by this NamespaceClass are deleted.
+                  Otherwise, they are left as it is but the managed-by label is removed.
+                type: boolean
               resource:
                 description: |-
                   resources lists the k8s objects created in each namespace
