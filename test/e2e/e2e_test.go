@@ -282,16 +282,154 @@ var _ = Describe("Manager", Ordered, func() {
 		// ))
 
 		Context("NamespaceClass", Ordered, func() {
-			const ()
+			// NamespaceClasses for testing
+			const (
+				publicNetworkClass   = "e2e-pubic-network"
+				internalNetworkClass = "e2e-internal-network"
+				invalidTemplateClass = "e2e-invalid-template"
+				pruneOnDeleteClass   = "e2e-prune-on-delete"
+				keepOnDeleteClass    = "e2e-keep-on-delete"
+			)
+
+			// Namespaces for testing
+			const (
+				webPortalNamespace   = "e2e-web-portal"
+				badTemplateNamespace = "e2e-bad-template"
+				pruneNamespace       = "e2e-prune"
+				keepNamespace        = "e2e-keep"
+			)
+
+			// config map names for testing
+			const (
+				appSettings = "app-settings"
+				vpnSettings = "vpn-settings"
+			)
 
 			BeforeAll(func() {
-				By("creating custom namespace resources")
-				Expect(applyManifest(createNamespaceClass()))
+				By("creating custom namespace class resources for test")
+				Expect(applyManifest(createNamespaceClass(publicNetworkClass, createConfigMap(appSettings, "info")))).To(Succeed())
+				Expect(applyManifest(createNamespaceClass(publicNetworkClass, createConfigMap(vpnSettings, "info")))).To(Succeed())
+
+				By("creating namespace resources for test")
+				_, err := kubectl("create", "namespace", webPortalNamespace)
+				Expect(err).NotTo(HaveOccurred())
+				_, err = kubectl("create", "namespace", badTemplateNamespace)
+				Expect(err).NotTo(HaveOccurred())
+				_, err = kubectl("create", "namespace", pruneNamespace)
+				Expect(err).NotTo(HaveOccurred())
+				_, err = kubectl("create", "namespace", keepNamespace)
+				Expect(err).NotTo(HaveOccurred())
+			})
+
+			AfterAll(func() {
+				By("deleting namespace class and namespaces created for test")
+				_, _ = kubectl(
+					"delete",
+					"namespace",
+					webPortalNamespace,
+					badTemplateNamespace,
+					pruneNamespace,
+					keepNamespace,
+					"--ignore-not-found",
+					"--wait=false",
+				)
+				_, _ = kubectl(
+					"delete",
+					"namespaceclass",
+					publicNetworkClass,
+					internalNetworkClass,
+					invalidTemplateClass,
+					pruneOnDeleteClass,
+					keepOnDeleteClass,
+					"--ignore-not-found",
+					"--wait=false",
+				)
+			})
+
+			It("creates managed config maps when namespace is labeled", func() {
+				_, err := kubectl("label", namespace, webPortalNamespace, classLabel(publicNetworkClass))
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getConfigMapField(webPortalNamespace, appSettings, "{.data.LOG_LEVEL}")).To(Equal("info"))
+					g.Expect(getConfigMapField(webPortalNamespace, appSettings, `{.metadata.labels.namespaceclass\.atolio\.io/managed-by}`)).To(Equal(publicNetworkClass))
+				}).Should(Succeed())
+			})
+
+			It("updates managed config maps when the custom resource changes", func() {
+				Expect(applyManifest(createNamespaceClass(publicNetworkClass, createConfigMap(appSettings, "debug"))))
+
+				Eventually(func(g Gomega) {
+					g.Expect(getConfigMapField(webPortalNamespace, appSettings, "{.data.LOG_LEVEL}")).To(Equal("debug"))
+				}).Should(Succeed())
+			})
+
+			It("restores a managed config map deleted by hand", func() {
+				_, err := kubectl("delete", "configmap", appSettings, "-n", webPortalNamespace)
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getConfigMapField(webPortalNamespace, appSettings, "{.data.LOG_LEVEL}")).To(Equal("debug"))
+				}).Should(Succeed())
+			})
+
+			It("leaves a hand made config map alone", func() {
+				_, err := kubectl("create", "configmap", "team-notes", "-n", webPortalNamespace, "--from-literal=owner=web")
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getConfigMapField(webPortalNamespace, "team-notes", "{.data.owner}")).To(Equal("web"))
+				}).Should(Succeed())
+			})
+
+			It("switches managed config maps when label changes", func() {
+				_, err := kubectl("label", "namespace", webPortalNamespace, classLabel(internalNetworkClass), "--overwrite")
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getManagedConfigMaps(webPortalNamespace)).To(ConsistOf(vpnSettings))
+				}).Should(Succeed())
 			})
 		})
 	})
 })
 
+// getManagedConfigMaps returns the config maps in the
+// given namespace that have the managed by label
+func getManagedConfigMaps(namespace string) ([]string, error) {
+	out, err := kubectl(
+		"get",
+		"configmap",
+		"-n",
+		namespace,
+		"-l",
+		"namespaceclass.lovebhardwaj.io/managed-by",
+		"-o",
+		`jsonpath={range .items[*]}{.metadata.name}{"\n"}{end}`,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return utils.GetNonEmptyLines(out), nil
+}
+
+// getConfigMapField returns a json path field of the
+// config map with the given name in the provided namespace.
+func getConfigMapField(namespace string, configMapName string, jsonPath string) (string, error) {
+	return kubectl("get", "configmap", configMapName, "-n", namespace, "-o", "jsonpath="+jsonPath)
+}
+
+// classLabel provides the namespace label for the namespace class.
+func classLabel(name string) string {
+	return "namespaceclass.lovebhardwaj.io/name=" + name
+}
+
+// kubectl runs the kubectl commands.
+func kubectl(args ...string) (string, error) {
+	return utils.Run(exec.Command("kubectl", args...))
+}
+
+// applyManifest applies the provided k8s manifest.
 func applyManifest(manifest string) error {
 	cmd := exec.Command("kubectl", "apply", "-f", "-")
 	cmd.Stdin = strings.NewReader(manifest)
@@ -299,14 +437,33 @@ func applyManifest(manifest string) error {
 	return err
 }
 
-func createNamespaceClass(name string, resources ...string) string {
+// createConfigMap creates a test config map template.
+func createConfigMap(name string, logLevel string) string {
+	return fmt.Sprintf(`apiVersion: v1
+kind: ConfigMap
+metadata:
+	name:%s
+data:
+	LOG_LEVEL: %s`, name, logLevel)
+}
+
+// createNamespaceClass creates the namespace class template.
+func createNamespaceClass(name string, templates ...string) string {
+	var resources strings.Builder
+	for _, tmpl := range templates {
+		resources.WriteString("\n  - template:")
+		for line := range strings.SplitSeq(strings.TrimSpace(tmpl), "\n") {
+			resources.WriteString("\n      ")
+			resources.WriteString(line)
+		}
+	}
 	return fmt.Sprintf(`apiVersion: namespaceclass.lovebhardwaj.io/v1alpha1
 kind: NamespaceClass
 metadata:
 	name: %s
 spec:
 	resources: %s
-`, name, strings.Join(resources, ""))
+`, name, resources.String())
 }
 
 // serviceAccountToken returns a token for the specified service account in the given namespace.
