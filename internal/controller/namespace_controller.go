@@ -50,7 +50,10 @@ const (
 	// managedByLabel to signal that the resource is managed
 	// by a namespaceclass.
 	managedByLabel = "namespaceclass.lovebhardwaj.io/managed-by"
-	templateValid  = "TemplatesValid"
+
+	typeTemplateValid     = "TemplatesValid"
+	reasonInvalidTemplate = "InvalidTemplate"
+	reasonValidTemplate   = "Valid"
 )
 
 // NamespaceReconciler creates the managed objects listed by
@@ -67,10 +70,10 @@ type NamespaceReconciler struct {
 
 // Reconcile makes that manages objects in the namespace named by req,
 // that are managed by the controller.
-func (nr *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
+func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ctrl.Result, error) {
 	log := logf.FromContext(ctx)
 	namespaceObj := &corev1.Namespace{}
-	if err := nr.Get(ctx, req.NamespacedName, namespaceObj); err != nil {
+	if err := r.Get(ctx, req.NamespacedName, namespaceObj); err != nil {
 		log.Error(err, "reconcile get namespace via name", "name", req.NamespacedName)
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
@@ -84,12 +87,12 @@ func (nr *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 	if namespaceClassName == "" {
 		// Prune any resources that were managed by the namespace class
 		// in this namespace.
-		return ctrl.Result{}, nr.prune(ctx, namespaceObj.Name, nil)
+		return ctrl.Result{}, r.prune(ctx, namespaceObj.Name, nil)
 	}
 
 	// Has the namespaceclassname label, fetch the object
 	namespaceClassObj := &v1alpha1.NamespaceClass{}
-	if err := nr.Get(ctx, client.ObjectKey{Name: namespaceClassName}, namespaceClassObj); err != nil {
+	if err := r.Get(ctx, client.ObjectKey{Name: namespaceClassName}, namespaceClassObj); err != nil {
 		log.Error(err, "get namespace class", "name", namespaceClassName)
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
@@ -103,13 +106,14 @@ func (nr *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		return ctrl.Result{}, nil
 	}
 
-	resourceObjects, errMsgs := renderTemplates(nr.Scheme, namespaceClassObj, namespaceObj.Name)
+	resourceObjects, errMsgs := renderTemplates(r.Scheme, namespaceClassObj, namespaceObj.Name)
 	if len(errMsgs) > 0 {
-		if err := nr.setCondition(ctx, namespaceClassObj, metav1.Condition{
-			Type:    templateValid,
-			Status:  metav1.ConditionFalse,
-			Reason:  "InvalidTemplate",
-			Message: strings.Join(errMsgs, ", "),
+		if err := r.setCondition(ctx, namespaceClassObj, metav1.Condition{
+			Type:               typeTemplateValid,
+			Status:             metav1.ConditionFalse,
+			Reason:             reasonInvalidTemplate,
+			Message:            strings.Join(errMsgs, ", "),
+			ObservedGeneration: namespaceClassObj.Generation,
 		}); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -122,26 +126,28 @@ func (nr *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		)
 	}
 
-	invalidObjects, applyErr := nr.applyAll(ctx, resourceObjects)
+	invalidObjects, applyErr := r.applyAll(ctx, resourceObjects)
 	if applyErr != nil {
 		return ctrl.Result{}, applyErr
 	}
 	if len(invalidObjects) > 0 {
-		if err := nr.setCondition(ctx, namespaceClassObj, metav1.Condition{
-			Type:    templateValid,
-			Status:  metav1.ConditionFalse,
-			Reason:  "InvalidTemplate",
-			Message: strings.Join(invalidObjects, ", "),
+		if err := r.setCondition(ctx, namespaceClassObj, metav1.Condition{
+			Type:               typeTemplateValid,
+			Status:             metav1.ConditionFalse,
+			Reason:             reasonInvalidTemplate,
+			Message:            strings.Join(invalidObjects, ", "),
+			ObservedGeneration: namespaceClassObj.Generation,
 		}); err != nil {
 			return ctrl.Result{}, err
 		}
 	}
 	if len(invalidObjects) == 0 {
-		if err := nr.setCondition(ctx, namespaceClassObj, metav1.Condition{
-			Type:    templateValid,
-			Status:  metav1.ConditionFalse,
-			Reason:  "Valid",
-			Message: "All templates are valid",
+		if err := r.setCondition(ctx, namespaceClassObj, metav1.Condition{
+			Type:               typeTemplateValid,
+			Status:             metav1.ConditionTrue,
+			Reason:             reasonValidTemplate,
+			Message:            "All templates are valid",
+			ObservedGeneration: namespaceClassObj.Generation,
 		}); err != nil {
 			return ctrl.Result{}, err
 		}
@@ -152,10 +158,10 @@ func (nr *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) 
 		keep = append(keep, obj.GetName())
 	}
 
-	return ctrl.Result{}, nr.prune(ctx, namespaceObj.Name, keep)
+	return ctrl.Result{}, r.prune(ctx, namespaceObj.Name, keep)
 }
 
-func (nr *NamespaceReconciler) setCondition(
+func (r *NamespaceReconciler) setCondition(
 	ctx context.Context,
 	namespaceClass *v1alpha1.NamespaceClass,
 	cond metav1.Condition,
@@ -163,7 +169,7 @@ func (nr *NamespaceReconciler) setCondition(
 	if !meta.SetStatusCondition(&namespaceClass.Status.Conditions, cond) {
 		return nil
 	}
-	if err := nr.Status().Update(ctx, namespaceClass); err != nil {
+	if err := r.Status().Update(ctx, namespaceClass); err != nil {
 		return fmt.Errorf("status update: %w", err)
 	}
 	return nil
@@ -173,12 +179,12 @@ func (nr *NamespaceReconciler) setCondition(
 // error if there are any from applying the object. Returns
 // the a list of objects that failed apply due to invalid template
 // or error if there was any error during apply.
-func (nr *NamespaceReconciler) applyAll(ctx context.Context, objs []*unstructured.Unstructured) ([]string, error) {
+func (r *NamespaceReconciler) applyAll(ctx context.Context, objs []*unstructured.Unstructured) ([]string, error) {
 	var errs []error
 	var invalidObjects []string
 
 	for i, obj := range objs {
-		if err := nr.Apply(
+		if err := r.Apply(
 			ctx,
 			client.ApplyConfigurationFromUnstructured(obj),
 			client.FieldOwner(fieldOwner),
@@ -250,12 +256,12 @@ func render(
 	return obj, nil
 }
 
-func (nr *NamespaceReconciler) prune(ctx context.Context, namespace string, keep []string) error {
+func (r *NamespaceReconciler) prune(ctx context.Context, namespace string, keep []string) error {
 	keepLabels := make([]fields.Selector, 0, len(keep))
 	for _, name := range keep {
 		keepLabels = append(keepLabels, fields.OneTermNotEqualSelector("metadata.name", name))
 	}
-	if err := nr.DeleteAllOf(
+	if err := r.DeleteAllOf(
 		ctx,
 		&corev1.ConfigMap{},
 		client.InNamespace(namespace),
@@ -269,9 +275,9 @@ func (nr *NamespaceReconciler) prune(ctx context.Context, namespace string, keep
 
 // namespaces returns a request for all namespaces that refer to
 // the namespaceclass custom resource.
-func (nr *NamespaceReconciler) namespaces(ctx context.Context, obj client.Object) []reconcile.Request {
+func (r *NamespaceReconciler) namespaces(ctx context.Context, obj client.Object) []reconcile.Request {
 	list := &corev1.NamespaceList{}
-	if err := nr.List(ctx, list, client.MatchingLabels{classLabel: obj.GetName()}); err != nil {
+	if err := r.List(ctx, list, client.MatchingLabels{classLabel: obj.GetName()}); err != nil {
 		logf.FromContext(ctx).Error(err, "list namespaces for custom resource namespaceclass", "name", obj.GetName())
 		return nil
 	}
@@ -291,7 +297,7 @@ func namespaceOf(_ context.Context, obj client.Object) []reconcile.Request {
 
 // SetupWithManager registers the reconciler with mgr.
 // It watches namespaces for namespaceclass custom resources.
-func (nr *NamespaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+func (r *NamespaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	// Only react to resources that have the manged by label.
 	managed := predicate.NewPredicateFuncs(func(object client.Object) bool {
 		_, ok := object.GetLabels()[managedByLabel]
@@ -303,12 +309,12 @@ func (nr *NamespaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 		For(&corev1.Namespace{}).
 		Watches(
 			&v1alpha1.NamespaceClass{},
-			handler.EnqueueRequestsFromMapFunc(nr.namespaces)).
+			handler.EnqueueRequestsFromMapFunc(r.namespaces)).
 		Watches(
 			&corev1.ConfigMap{},
 			handler.EnqueueRequestsFromMapFunc(namespaceOf),
 			builder.WithPredicates(managed),
 		).
-		Named("namespaceclass").
-		Complete(nr)
+		Named("namespaceclass-namespace").
+		Complete(r)
 }

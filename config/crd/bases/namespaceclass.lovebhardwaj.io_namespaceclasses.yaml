@@ -46,7 +46,7 @@ spec:
                   is deleted. When true all managed objects managed by this NamespaceClass are deleted.
                   Otherwise, they are left as it is but the managed-by label is removed.
                 type: boolean
-              resource:
+              resources:
                 description: |-
                   resources lists the k8s objects created in each namespace
                   for this namespace class.

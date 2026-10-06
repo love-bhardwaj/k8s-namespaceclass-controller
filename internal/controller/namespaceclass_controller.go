@@ -54,11 +54,12 @@ func (r *NamespaceClassReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 		return ctrl.Result{}, client.IgnoreNotFound(err)
 	}
 
-	// Not for deletion add the finalizer.
-	if namespaceClassObj.DeletionTimestamp.IsZero() && controllerutil.AddFinalizer(namespaceClassObj, namespaceClassFinalizer) {
-		if err := r.Update(ctx, namespaceClassObj); err != nil {
-			log.Error(err, "Add namespaceclass resource finalizer")
-			return ctrl.Result{}, client.IgnoreNotFound(err)
+	if namespaceClassObj.DeletionTimestamp.IsZero() {
+		if controllerutil.AddFinalizer(namespaceClassObj, namespaceClassFinalizer) {
+			if err := r.Update(ctx, namespaceClassObj); err != nil {
+				log.Error(err, "Add namespaceclass resource finalizer")
+				return ctrl.Result{}, client.IgnoreNotFound(err)
+			}
 		}
 		return ctrl.Result{}, nil
 	}

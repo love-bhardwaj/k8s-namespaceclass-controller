@@ -39,7 +39,7 @@ type NamespaceClassSpec struct {
 	// resources lists the k8s objects created in each namespace
 	// for this namespace class.
 	// +optional
-	Resources []NamespaceClassResource `json:"resource,omitempty"`
+	Resources []NamespaceClassResource `json:"resources,omitempty"`
 
 	// pruningOnDelete controls what happens to managed objects when this NamespaceClass
 	// is deleted. When true all managed objects managed by this NamespaceClass are deleted.
