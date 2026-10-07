@@ -25,6 +25,7 @@ import (
 
 	"github.com/love-bhardwaj/k8s-namespaceclass-controller/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -35,6 +36,7 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
+	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -56,6 +58,12 @@ const (
 	reasonValidTemplate   = "Valid"
 )
 
+// supportedKinds holds the kind of objects we support.
+var supportedKinds = []client.Object{
+	&corev1.ConfigMap{},
+	&networkingv1.NetworkPolicy{},
+}
+
 // NamespaceReconciler creates the managed objects listed by
 // custom resources that a namespace points to via labels.
 type NamespaceReconciler struct {
@@ -65,6 +73,7 @@ type NamespaceReconciler struct {
 
 // +kubebuilder:rbac:groups="",resources=namespaces,verbs=get;list;watch
 // +kubebuilder:rbac:groups="",resources=configmaps,verbs=get;list;watch;create;update;patch;delete;deletecollection
+// +kubebuilder:rbac:groups=networking.k8s.io,resources=networkpolicies,verbs=get;list;watch;create;update;patch;delete;deletecollection
 // +kubebuilder:rbac:groups="namespaceclass.lovebhardwaj.io",resources=namespaceclasses,verbs=get;list;watch;
 // +kubebuilder:rbac:groups="namespaceclass.lovebhardwaj.io",resources=namespaceclasses/status,verbs=get;update;patch
 
@@ -153,12 +162,7 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}
 	}
 
-	keep := make([]string, 0, len(resourceObjects))
-	for _, obj := range resourceObjects {
-		keep = append(keep, obj.GetName())
-	}
-
-	return ctrl.Result{}, r.prune(ctx, namespaceObj.Name, keep)
+	return ctrl.Result{}, r.prune(ctx, namespaceObj.Name, resourceObjects)
 }
 
 func (r *NamespaceReconciler) setCondition(
@@ -256,21 +260,32 @@ func render(
 	return obj, nil
 }
 
-func (r *NamespaceReconciler) prune(ctx context.Context, namespace string, keep []string) error {
-	keepLabels := make([]fields.Selector, 0, len(keep))
-	for _, name := range keep {
-		keepLabels = append(keepLabels, fields.OneTermNotEqualSelector("metadata.name", name))
+func (r *NamespaceReconciler) prune(ctx context.Context, namespace string, keep []*unstructured.Unstructured) error {
+	var errs []error
+	for _, kind := range supportedKinds {
+		grpVerKind, err := apiutil.GVKForObject(kind, r.Scheme)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		var notKeptSelectors []fields.Selector
+		for _, obj := range keep {
+			if obj.GroupVersionKind() == grpVerKind {
+				notKeptSelectors = append(notKeptSelectors, fields.OneTermEqualSelector("metadata.name", obj.GetName()))
+			}
+		}
+
+		if err := r.DeleteAllOf(
+			ctx,
+			kind,
+			client.InNamespace(namespace),
+			client.HasLabels{managedByLabel},
+			client.MatchingFieldsSelector{Selector: fields.AndSelectors(notKeptSelectors...)},
+		); err != nil {
+			errs = append(errs, fmt.Errorf("prune managed %s: %w", grpVerKind.Kind, err))
+		}
 	}
-	if err := r.DeleteAllOf(
-		ctx,
-		&corev1.ConfigMap{},
-		client.InNamespace(namespace),
-		client.HasLabels{managedByLabel},
-		client.MatchingFieldsSelector{Selector: fields.AndSelectors(keepLabels...)},
-	); err != nil {
-		return fmt.Errorf("prune managed configmaps: %w", err)
-	}
-	return nil
+	return errors.Join(errs...)
 }
 
 // namespaces returns a request for all namespaces that refer to
@@ -305,16 +320,18 @@ func (r *NamespaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 	})
 	// Watch for namespace that refer to a namespaceclass resource.
 	// Watch for resource that are managed by the namespaceclass controller
-	return ctrl.NewControllerManagedBy(mgr).
+	b := ctrl.NewControllerManagedBy(mgr).
 		For(&corev1.Namespace{}).
 		Watches(
 			&v1alpha1.NamespaceClass{},
-			handler.EnqueueRequestsFromMapFunc(r.namespaces)).
-		Watches(
-			&corev1.ConfigMap{},
+			handler.EnqueueRequestsFromMapFunc(r.namespaces),
+		)
+	for _, kind := range supportedKinds {
+		b = b.Watches(
+			kind,
 			handler.EnqueueRequestsFromMapFunc(namespaceOf),
 			builder.WithPredicates(managed),
-		).
-		Named("namespaceclass-namespace").
-		Complete(r)
+		)
+	}
+	return b.Named("namespaceclass").Complete(r)
 }
