@@ -21,7 +21,7 @@ import (
 	"errors"
 	"fmt"
 
-	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
@@ -85,33 +85,65 @@ func (r *NamespaceClassReconciler) cleanup(
 	ctx context.Context,
 	namespaceClass *v1alpha1.NamespaceClass,
 ) error {
-	cfgMapList := &corev1.ConfigMapList{}
-	if err := r.List(ctx, cfgMapList, client.MatchingLabels{managedByLabel: namespaceClass.Name}); err != nil {
-		return fmt.Errorf("list managed config maps: %w", err)
-	}
-
 	var errs []error
-	for i := range cfgMapList.Items {
-		cfgMap := &cfgMapList.Items[i]
-		if namespaceClass.Spec.PruningOnDelete {
-			if err := r.Delete(ctx, cfgMap); client.IgnoreNotFound(err) != nil {
-				errs = append(errs, fmt.Errorf("delete resource %s/%s: %w", cfgMap.Namespace, cfgMap.Name, err))
-			}
+	for _, kind := range managedKinds {
+		objs, err := r.listManaged(ctx, kind, namespaceClass.Name)
+		if err != nil {
+			errs = append(errs, err)
 			continue
 		}
 
-		// If pruning is disable, we can remove our label.
-		patch := client.MergeFrom(cfgMap.DeepCopy())
-		delete(cfgMap.Labels, managedByLabel)
-		if err := r.Patch(ctx, cfgMap, patch); client.IgnoreNotFound(err) != nil {
-			errs = append(errs, fmt.Errorf("remove label: %s/%s: %w", cfgMap.Namespace, cfgMap.Name, err))
+		for _, obj := range objs {
+			id := fmt.Sprintf("%T %s/%s", obj, obj.GetNamespace(), obj.GetName())
+			if namespaceClass.Spec.PruningOnDelete {
+				if err := r.Delete(ctx, obj); client.IgnoreNotFound(err) != nil {
+					errs = append(errs, fmt.Errorf("delete %s: %w", id, err))
+				}
+				continue
+			}
+			patch := client.MergeFrom(obj.DeepCopyObject().(client.Object))
+			labels := obj.GetLabels()
+			delete(labels, managedByLabel)
+			obj.SetLabels(labels)
+			if err := r.Patch(ctx, obj, patch); client.IgnoreNotFound(err) != nil {
+				errs = append(errs, fmt.Errorf("release %s: %w", id, err))
+			}
 		}
 	}
 	return errors.Join(errs...)
 }
 
+func (r *NamespaceClassReconciler) listManaged(
+	ctx context.Context,
+	kind managedKind,
+	name string,
+) ([]client.Object, error) {
+	list := kind.list.DeepCopyObject().(client.ObjectList)
+	if err := r.List(ctx, list, client.MatchingLabels{managedByLabel: name}); err != nil {
+		return nil, fmt.Errorf("list managed %s: %w", kind.gvk.Kind, err)
+	}
+
+	items, err := meta.ExtractList(list)
+	if err != nil {
+		return nil, fmt.Errorf("extract list %s: %w", kind.gvk.Kind, err)
+	}
+
+	objects := make([]client.Object, 0, len(items))
+	for _, item := range items {
+		obj, ok := item.(client.Object)
+		if !ok {
+			return nil, fmt.Errorf("%T is not an object", item)
+		}
+		objects = append(objects, obj)
+	}
+	return objects, nil
+}
+
 // SetupWithManager sets up the controller with the Manager.
 func (r *NamespaceClassReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := checkManagedKinds(r.Scheme); err != nil {
+		return err
+	}
 	return ctrl.NewControllerManagedBy(mgr).
 		For(&v1alpha1.NamespaceClass{}).
 		Named("namespaceclass").

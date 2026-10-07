@@ -25,7 +25,6 @@ import (
 
 	"github.com/love-bhardwaj/k8s-namespaceclass-controller/api/v1alpha1"
 	corev1 "k8s.io/api/core/v1"
-	networkingv1 "k8s.io/api/networking/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -36,7 +35,6 @@ import (
 	ctrl "sigs.k8s.io/controller-runtime"
 	"sigs.k8s.io/controller-runtime/pkg/builder"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/client/apiutil"
 	"sigs.k8s.io/controller-runtime/pkg/handler"
 	logf "sigs.k8s.io/controller-runtime/pkg/log"
 	"sigs.k8s.io/controller-runtime/pkg/predicate"
@@ -57,12 +55,6 @@ const (
 	reasonInvalidTemplate = "InvalidTemplate"
 	reasonValidTemplate   = "Valid"
 )
-
-// supportedKinds holds the kind of objects we support.
-var supportedKinds = []client.Object{
-	&corev1.ConfigMap{},
-	&networkingv1.NetworkPolicy{},
-}
 
 // NamespaceReconciler creates the managed objects listed by
 // custom resources that a namespace points to via labels.
@@ -262,27 +254,22 @@ func render(
 
 func (r *NamespaceReconciler) prune(ctx context.Context, namespace string, keep []*unstructured.Unstructured) error {
 	var errs []error
-	for _, kind := range supportedKinds {
-		grpVerKind, err := apiutil.GVKForObject(kind, r.Scheme)
-		if err != nil {
-			errs = append(errs, err)
-			continue
-		}
+	for _, kind := range managedKinds {
 		var notKeptSelectors []fields.Selector
 		for _, obj := range keep {
-			if obj.GroupVersionKind() == grpVerKind {
-				notKeptSelectors = append(notKeptSelectors, fields.OneTermEqualSelector("metadata.name", obj.GetName()))
+			if obj.GroupVersionKind() == kind.gvk {
+				notKeptSelectors = append(notKeptSelectors, fields.OneTermNotEqualSelector("metadata.name", obj.GetName()))
 			}
 		}
 
 		if err := r.DeleteAllOf(
 			ctx,
-			kind,
+			kind.obj,
 			client.InNamespace(namespace),
 			client.HasLabels{managedByLabel},
 			client.MatchingFieldsSelector{Selector: fields.AndSelectors(notKeptSelectors...)},
 		); err != nil {
-			errs = append(errs, fmt.Errorf("prune managed %s: %w", grpVerKind.Kind, err))
+			errs = append(errs, fmt.Errorf("prune managed %s: %w", kind.gvk.Kind, err))
 		}
 	}
 	return errors.Join(errs...)
@@ -313,6 +300,9 @@ func namespaceOf(_ context.Context, obj client.Object) []reconcile.Request {
 // SetupWithManager registers the reconciler with mgr.
 // It watches namespaces for namespaceclass custom resources.
 func (r *NamespaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
+	if err := checkManagedKinds(r.Scheme); err != nil {
+		return err
+	}
 	// Only react to resources that have the manged by label.
 	managed := predicate.NewPredicateFuncs(func(object client.Object) bool {
 		_, ok := object.GetLabels()[managedByLabel]
@@ -326,12 +316,12 @@ func (r *NamespaceReconciler) SetupWithManager(mgr ctrl.Manager) error {
 			&v1alpha1.NamespaceClass{},
 			handler.EnqueueRequestsFromMapFunc(r.namespaces),
 		)
-	for _, kind := range supportedKinds {
+	for _, kind := range managedKinds {
 		b = b.Watches(
-			kind,
+			kind.obj,
 			handler.EnqueueRequestsFromMapFunc(namespaceOf),
 			builder.WithPredicates(managed),
 		)
 	}
-	return b.Named("namespaceclass").Complete(r)
+	return b.Named("namespaceclass-namespace").Complete(r)
 }
