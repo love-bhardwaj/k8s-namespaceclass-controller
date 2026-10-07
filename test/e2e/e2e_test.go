@@ -1,5 +1,4 @@
 //go:build e2e
-// +build e2e
 
 /*
 Copyright 2026.
@@ -35,16 +34,16 @@ import (
 )
 
 // namespace where the project is deployed in
-const namespace = "k8s-namespaceclass-controller-system"
+const namespace = "namespaceclass-system"
 
 // serviceAccountName created for the project
-const serviceAccountName = "k8s-namespaceclass-controller-controller-manager"
+const serviceAccountName = "namespaceclass-controller-manager"
 
 // metricsServiceName is the name of the metrics service of the project
-const metricsServiceName = "k8s-namespaceclass-controller-controller-manager-metrics-service"
+const metricsServiceName = "namespaceclass-controller-manager-metrics-service"
 
 // metricsRoleBindingName is the name of the RBAC that will be created to allow get the metrics data
-const metricsRoleBindingName = "k8s-namespaceclass-controller-metrics-binding"
+const metricsRoleBindingName = "namespaceclass-metrics-binding"
 
 var _ = Describe("Manager", Ordered, func() {
 	var controllerPodName string
@@ -177,7 +176,7 @@ var _ = Describe("Manager", Ordered, func() {
 		It("should ensure the metrics endpoint is serving metrics", func() {
 			By("creating a ClusterRoleBinding for the service account to allow access to metrics")
 			cmd := exec.Command("kubectl", "create", "clusterrolebinding", metricsRoleBindingName,
-				"--clusterrole=k8s-namespaceclass-controller-metrics-reader",
+				"--clusterrole=namespaceclass-metrics-reader",
 				fmt.Sprintf("--serviceaccount=%s:%s", namespace, serviceAccountName),
 			)
 			_, err := utils.Run(cmd)
@@ -216,6 +215,12 @@ var _ = Describe("Manager", Ordered, func() {
 			// +kubebuilder:scaffold:e2e-metrics-webhooks-readiness
 
 			By("creating the curl-metrics pod to access the metrics endpoint")
+			curlScript := fmt.Sprintf("for i in $(seq 1 30); do "+
+				"curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics "+
+				"&& exit 0 || sleep 2; done; exit 1",
+				token, metricsServiceName, namespace)
+			curlScriptJSON, err := json.Marshal(curlScript)
+			Expect(err).NotTo(HaveOccurred())
 			cmd = exec.Command("kubectl", "run", "curl-metrics", "--restart=Never",
 				"--namespace", namespace,
 				"--image=curlimages/curl:latest",
@@ -226,9 +231,7 @@ var _ = Describe("Manager", Ordered, func() {
 							"name": "curl",
 							"image": "curlimages/curl:latest",
 							"command": ["/bin/sh", "-c"],
-							"args": [
-								"for i in $(seq 1 30); do curl -v -k -H 'Authorization: Bearer %s' https://%s.%s.svc.cluster.local:8443/metrics && exit 0 || sleep 2; done; exit 1"
-							],
+							"args": [%s],
 							"securityContext": {
 								"readOnlyRootFilesystem": true,
 								"allowPrivilegeEscalation": false,
@@ -244,7 +247,7 @@ var _ = Describe("Manager", Ordered, func() {
 						}],
 						"serviceAccountName": "%s"
 					}
-				}`, token, metricsServiceName, namespace, serviceAccountName))
+				}`, curlScriptJSON, serviceAccountName))
 			_, err = utils.Run(cmd)
 			Expect(err).NotTo(HaveOccurred(), "Failed to create curl-metrics pod")
 
@@ -271,53 +274,56 @@ var _ = Describe("Manager", Ordered, func() {
 
 		// +kubebuilder:scaffold:e2e-webhooks-checks
 
-		// TODO: Customize the e2e test suite with scenarios specific to your project.
-		// Consider applying sample/CR(s) and check their status and/or verifying
-		// the reconciliation by using the metrics, i.e.:
-		// metricsOutput, err := getMetricsOutput()
-		// Expect(err).NotTo(HaveOccurred(), "Failed to retrieve logs from curl pod")
-		// Expect(metricsOutput).To(ContainSubstring(
-		//    fmt.Sprintf(`controller_runtime_reconcile_total{controller="%s",result="success"} 1`,
-		//    strings.ToLower(<Kind>),
-		// ))
-
 		Context("NamespaceClass", Ordered, func() {
 			// NamespaceClasses for testing
 			const (
-				publicNetworkClass   = "e2e-pubic-network"
-				internalNetworkClass = "e2e-internal-network"
-				invalidTemplateClass = "e2e-invalid-template"
-				pruneOnDeleteClass   = "e2e-prune-on-delete"
-				keepOnDeleteClass    = "e2e-keep-on-delete"
+				namespaceClassPublicNetwork         = "e2e-public-network"
+				namespaceClassInternalNetwork       = "e2e-internal-network"
+				namespaceClassTemplateSetsNamespace = "e2e-template-sets-namespace"
+				namespaceClassPruneOnDelete         = "e2e-prune-on-delete"
+				namespaceClassKeepOnDelete          = "e2e-keep-on-delete"
+				namespaceClassInvalidDataKey        = "e2e-invalid-data-key"
+				namespaceClassSecretTemplate        = "e2e-secret-template"
 			)
 
 			// Namespaces for testing
 			const (
-				webPortalNamespace   = "e2e-web-portal"
-				badTemplateNamespace = "e2e-bad-template"
-				pruneNamespace       = "e2e-prune"
-				keepNamespace        = "e2e-keep"
+				namespaceWebPortal             = "e2e-web-portal"
+				namespaceTemplateSetsNamespace = "e2e-template-sets-namespace"
+				namespacePrune                 = "e2e-prune"
+				namespaceKeep                  = "e2e-keep"
+				namespaceInvalidDataKey        = "e2e-invalid-data-key"
 			)
 
 			// config map names for testing
 			const (
-				appSettings = "app-settings"
-				vpnSettings = "vpn-settings"
+				configMapAppSettings = "app-settings"
+				configMapVPNSettings = "vpn-settings"
 			)
 
 			BeforeAll(func() {
 				By("creating custom namespace class resources for test")
-				Expect(applyManifest(createNamespaceClass(publicNetworkClass, createConfigMap(appSettings, "info")))).To(Succeed())
-				Expect(applyManifest(createNamespaceClass(publicNetworkClass, createConfigMap(vpnSettings, "info")))).To(Succeed())
+				Expect(applyManifest(createNamespaceClass(
+					namespaceClassPublicNetwork,
+					createConfigMap(configMapAppSettings, "info"),
+				))).
+					To(Succeed())
+				Expect(applyManifest(createNamespaceClass(
+					namespaceClassInternalNetwork,
+					createConfigMap(configMapVPNSettings, "info"),
+				))).
+					To(Succeed())
 
 				By("creating namespace resources for test")
-				_, err := kubectl("create", "namespace", webPortalNamespace)
+				_, err := kubectl("create", "namespace", namespaceWebPortal)
 				Expect(err).NotTo(HaveOccurred())
-				_, err = kubectl("create", "namespace", badTemplateNamespace)
+				_, err = kubectl("create", "namespace", namespaceTemplateSetsNamespace)
 				Expect(err).NotTo(HaveOccurred())
-				_, err = kubectl("create", "namespace", pruneNamespace)
+				_, err = kubectl("create", "namespace", namespacePrune)
 				Expect(err).NotTo(HaveOccurred())
-				_, err = kubectl("create", "namespace", keepNamespace)
+				_, err = kubectl("create", "namespace", namespaceKeep)
+				Expect(err).NotTo(HaveOccurred())
+				_, err = kubectl("create", "namespace", namespaceInvalidDataKey)
 				Expect(err).NotTo(HaveOccurred())
 			})
 
@@ -326,69 +332,210 @@ var _ = Describe("Manager", Ordered, func() {
 				_, _ = kubectl(
 					"delete",
 					"namespace",
-					webPortalNamespace,
-					badTemplateNamespace,
-					pruneNamespace,
-					keepNamespace,
+					namespaceWebPortal,
+					namespaceTemplateSetsNamespace,
+					namespacePrune,
+					namespaceKeep,
+					namespaceInvalidDataKey,
 					"--ignore-not-found",
 					"--wait=false",
 				)
 				_, _ = kubectl(
 					"delete",
 					"namespaceclass",
-					publicNetworkClass,
-					internalNetworkClass,
-					invalidTemplateClass,
-					pruneOnDeleteClass,
-					keepOnDeleteClass,
+					namespaceClassPublicNetwork,
+					namespaceClassInternalNetwork,
+					namespaceClassTemplateSetsNamespace,
+					namespaceClassPruneOnDelete,
+					namespaceClassKeepOnDelete,
+					namespaceClassInvalidDataKey,
 					"--ignore-not-found",
-					"--wait=false",
+					"--timeout=2m",
 				)
 			})
 
 			It("creates managed config maps when namespace is labeled", func() {
-				_, err := kubectl("label", namespace, webPortalNamespace, classLabel(publicNetworkClass))
+				_, err := kubectl("label", "namespace", namespaceWebPortal, classLabel(namespaceClassPublicNetwork))
 				Expect(err).NotTo(HaveOccurred())
 
 				Eventually(func(g Gomega) {
-					g.Expect(getConfigMapField(webPortalNamespace, appSettings, "{.data.LOG_LEVEL}")).To(Equal("info"))
-					g.Expect(getConfigMapField(webPortalNamespace, appSettings, `{.metadata.labels.namespaceclass\.atolio\.io/managed-by}`)).To(Equal(publicNetworkClass))
+					g.Expect(getConfigMapField(namespaceWebPortal, configMapAppSettings, "{.data.LOG_LEVEL}")).
+						To(Equal("info"))
+					g.Expect(getConfigMapField(
+						namespaceWebPortal,
+						configMapAppSettings,
+						`{.metadata.labels.namespaceclass\.lovebhardwaj\.io/managed-by}`,
+					)).To(Equal(namespaceClassPublicNetwork))
 				}).Should(Succeed())
 			})
 
 			It("updates managed config maps when the custom resource changes", func() {
-				Expect(applyManifest(createNamespaceClass(publicNetworkClass, createConfigMap(appSettings, "debug"))))
+				Expect(applyManifest(createNamespaceClass(
+					namespaceClassPublicNetwork,
+					createConfigMap(configMapAppSettings, "debug"),
+				))).To(Succeed())
 
 				Eventually(func(g Gomega) {
-					g.Expect(getConfigMapField(webPortalNamespace, appSettings, "{.data.LOG_LEVEL}")).To(Equal("debug"))
+					g.Expect(getConfigMapField(namespaceWebPortal, configMapAppSettings, "{.data.LOG_LEVEL}")).To(Equal("debug"))
 				}).Should(Succeed())
 			})
 
 			It("restores a managed config map deleted by hand", func() {
-				_, err := kubectl("delete", "configmap", appSettings, "-n", webPortalNamespace)
+				_, err := kubectl("delete", "configmap", configMapAppSettings, "-n", namespaceWebPortal)
 				Expect(err).NotTo(HaveOccurred())
 
 				Eventually(func(g Gomega) {
-					g.Expect(getConfigMapField(webPortalNamespace, appSettings, "{.data.LOG_LEVEL}")).To(Equal("debug"))
+					g.Expect(getConfigMapField(namespaceWebPortal, configMapAppSettings, "{.data.LOG_LEVEL}")).
+						To(Equal("debug"))
+				}).Should(Succeed())
+			})
+
+			It("reverts a managed config map edited by hand", func() {
+				_, err := kubectl("patch", "configmap", configMapAppSettings, "-n", namespaceWebPortal,
+					"--type=merge", "-p", `{"data":{"LOG_LEVEL":"trace"}}`)
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getConfigMapField(namespaceWebPortal, configMapAppSettings, "{.data.LOG_LEVEL}")).
+						To(Equal("debug"))
 				}).Should(Succeed())
 			})
 
 			It("leaves a hand made config map alone", func() {
-				_, err := kubectl("create", "configmap", "team-notes", "-n", webPortalNamespace, "--from-literal=owner=web")
+				_, err := kubectl("create", "configmap", "team-notes", "-n", namespaceWebPortal, "--from-literal=owner=web")
 				Expect(err).NotTo(HaveOccurred())
 
-				Eventually(func(g Gomega) {
-					g.Expect(getConfigMapField(webPortalNamespace, "team-notes", "{.data.owner}")).To(Equal("web"))
-				}).Should(Succeed())
+				Consistently(func(g Gomega) {
+					g.Expect(getConfigMapField(namespaceWebPortal, "team-notes", "{.data.owner}")).
+						To(Equal("web"))
+				}, 10*time.Second).Should(Succeed())
 			})
 
 			It("switches managed config maps when label changes", func() {
-				_, err := kubectl("label", "namespace", webPortalNamespace, classLabel(internalNetworkClass), "--overwrite")
+				_, err := kubectl(
+					"label",
+					"namespace",
+					namespaceWebPortal,
+					classLabel(namespaceClassInternalNetwork),
+					"--overwrite",
+				)
 				Expect(err).NotTo(HaveOccurred())
 
 				Eventually(func(g Gomega) {
-					g.Expect(getManagedConfigMaps(webPortalNamespace)).To(ConsistOf(vpnSettings))
+					g.Expect(getManagedConfigMaps(namespaceWebPortal)).To(ConsistOf(configMapVPNSettings))
 				}).Should(Succeed())
+			})
+
+			It("removes managed config maps when the label is removed", func() {
+				_, err := kubectl("label", "namespace", namespaceWebPortal, "namespaceclass.lovebhardwaj.io/name-")
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getManagedConfigMaps(namespaceWebPortal)).To(BeEmpty())
+				}).Should(Succeed())
+				Expect(getConfigMapField(namespaceWebPortal, "team-notes", "{.data.owner}")).
+					To(Equal("web"), "hand made config map must survive")
+			})
+
+			It("removes label when namespaceclass resource deleted and pruning disabled", func() {
+				By("labeling a namespace for a custom resource with pruningOnDelete false")
+
+				Expect(applyManifest(createNamespaceClass(
+					namespaceClassKeepOnDelete,
+					createConfigMap(configMapAppSettings, "info"),
+				))).To(Succeed())
+
+				_, err := kubectl("label", "namespace", namespaceKeep, classLabel(namespaceClassKeepOnDelete))
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getManagedConfigMaps(namespaceKeep)).To(ConsistOf(configMapAppSettings))
+				}).Should(Succeed())
+
+				By("deleting the custom resource")
+
+				_, err = kubectl("delete", "namespaceclass", namespaceClassKeepOnDelete, "--timeout=2m")
+				Expect(err).NotTo(HaveOccurred())
+
+				Expect(getConfigMapField(namespaceKeep, configMapAppSettings, "{.data.LOG_LEVEL}")).
+					To(Equal("info"), "config map should be kept")
+				Expect(getManagedConfigMaps(namespaceKeep)).To(BeEmpty(), "managed-by label should be removed")
+			})
+
+			It("prunes resources when namespaceclass resource deleted and pruning enabled", func() {
+				By("labeling a namespace for a custom resource with pruningOnDelete true")
+				Expect(applyManifest(withPruningOnDelete(
+					createNamespaceClass(
+						namespaceClassPruneOnDelete,
+						createConfigMap(configMapAppSettings, "info"),
+					)))).To(Succeed())
+
+				_, err := kubectl("label", "namespace", namespacePrune, classLabel(namespaceClassPruneOnDelete))
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getManagedConfigMaps(namespacePrune)).To(ConsistOf(configMapAppSettings))
+				}).Should(Succeed())
+
+				By("deleting the custom resource")
+				_, err = kubectl("delete", "namespaceclass", namespaceClassPruneOnDelete, "--timeout=2m")
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = kubectl("get", "configmap", configMapAppSettings, "-n", namespacePrune)
+				Expect(err).To(HaveOccurred(), "config map should be deleted")
+			})
+
+			It("reports a template that sets metadata.namespace", func() {
+				Expect(applyManifest(createNamespaceClass(namespaceClassTemplateSetsNamespace, `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: flags
+  namespace: kube-system`))).To(Succeed())
+				_, err := kubectl(
+					"label",
+					"namespace",
+					namespaceTemplateSetsNamespace,
+					classLabel(namespaceClassTemplateSetsNamespace),
+				)
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getTemplatesValidReason(namespaceClassTemplateSetsNamespace)).To(Equal("InvalidTemplate"))
+				}).Should(Succeed())
+				Expect(getManagedConfigMaps(namespaceTemplateSetsNamespace)).
+					To(BeEmpty(), "nothing is created from a bad template")
+			})
+
+			It("reports a config map the API server rejects", func() {
+				Expect(applyManifest(createNamespaceClass(namespaceClassInvalidDataKey, `apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: bad-keys
+data:
+  "bad key!": "foobar"`))).To(Succeed())
+				_, err := kubectl("label", "namespace", namespaceInvalidDataKey, classLabel(namespaceClassInvalidDataKey))
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getTemplatesValidReason(namespaceClassInvalidDataKey)).To(Equal("InvalidTemplate"))
+				}).Should(Succeed())
+
+				_, err = kubectl("get", "configmap", "bad-keys", "-n", namespaceInvalidDataKey)
+				Expect(err).To(HaveOccurred(), "rejected config map should not exist")
+			})
+
+			It("rejects a custom resource with a kind other than config map", func() {
+				err := applyManifest(createNamespaceClass(namespaceClassSecretTemplate, `apiVersion: v1
+kind: Secret
+metadata:
+  name: db-password
+stringData:
+  password: changeme`))
+				Expect(err).To(HaveOccurred(), "the CRD should reject a Secret template")
+				Expect(err.Error()).To(ContainSubstring("only v1 ConfigMap is allowed"))
+
+				_, err = kubectl("get", "namespaceclass", namespaceClassSecretTemplate)
+				Expect(err).To(HaveOccurred(), "the custom resource should not be stored")
 			})
 		})
 	})
@@ -442,9 +589,9 @@ func createConfigMap(name string, logLevel string) string {
 	return fmt.Sprintf(`apiVersion: v1
 kind: ConfigMap
 metadata:
-	name:%s
+  name: %s
 data:
-	LOG_LEVEL: %s`, name, logLevel)
+  LOG_LEVEL: %s`, name, logLevel)
 }
 
 // createNamespaceClass creates the namespace class template.
@@ -460,10 +607,21 @@ func createNamespaceClass(name string, templates ...string) string {
 	return fmt.Sprintf(`apiVersion: namespaceclass.lovebhardwaj.io/v1alpha1
 kind: NamespaceClass
 metadata:
-	name: %s
+  name: %s
 spec:
-	resources: %s
+  resources:%s
 `, name, resources.String())
+}
+
+// getTemplatesValidReason returns the reason of the TemplatesValid condition of the namespace class name.
+func getTemplatesValidReason(name string) (string, error) {
+	return kubectl("get", "namespaceclass", name, "-o",
+		`jsonpath={.status.conditions[?(@.type=="TemplatesValid")].reason}`)
+}
+
+// withPruningOnDelete sets spec.pruningOnDelete to true in a manifest from createNamespaceClass.
+func withPruningOnDelete(manifest string) string {
+	return strings.Replace(manifest, "spec:\n", "spec:\n  pruningOnDelete: true\n", 1)
 }
 
 // serviceAccountToken returns a token for the specified service account in the given namespace.
