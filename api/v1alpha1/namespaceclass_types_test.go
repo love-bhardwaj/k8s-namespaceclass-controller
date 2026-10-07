@@ -37,11 +37,18 @@ const testConfigMapTemplate = `{
 	"data": {"LOG_LEVEL": "info"}
 }`
 
+const testNetworkPolicyTemplate = `{
+	"apiVersion": "networking.k8s.io/v1", 
+	"kind": "NetworkPolicy", 
+	"metadata": {"name": "allow-world-ingress"}, 
+	"spec": {"podSelector": {}}
+}`
+
 func TestCreateNamespaceClass(t *testing.T) {
 	wd, err := os.Getwd()
 	require.NoError(t, err)
 	env := &envtest.Environment{
-		BinaryAssetsDirectory: filepath.Join(wd, "../../bin/k8s/1.37.0-darwin-amd64"),
+		BinaryAssetsDirectory: filepath.Join(wd, "../../bin/k8s/1.37.0-darwin-arm64"),
 		CRDDirectoryPaths:     []string{filepath.Join(wd, "../../config", "crd", "bases")},
 		ErrorIfCRDPathMissing: true,
 	}
@@ -69,6 +76,14 @@ func TestCreateNamespaceClass(t *testing.T) {
 			namespaceClass: newNamespaceClass("test-config", testConfigMapTemplate),
 		},
 		{
+			name:           "accepts network policy",
+			namespaceClass: newNamespaceClass("test-policy", testNetworkPolicyTemplate),
+		},
+		{
+			name:           "accepts config map and network policy",
+			namespaceClass: newNamespaceClass("test-both", testConfigMapTemplate, testNetworkPolicyTemplate),
+		},
+		{
 			name: "version not v1",
 			namespaceClass: newNamespaceClass("invalid-version", `{
 					"apiVersion": "v2",
@@ -77,7 +92,7 @@ func TestCreateNamespaceClass(t *testing.T) {
 					"data": {"LOG_LEVEL": "info"}
 				}`,
 			),
-			wantErr: "only v1 ConfigMap is allowed",
+			wantErr: "only v1 ConfigMap and networking.k8s.io/v1 Network policy is allowed",
 		},
 		{
 			name: "not a config map",
@@ -88,7 +103,7 @@ func TestCreateNamespaceClass(t *testing.T) {
 					"data": {"LOG_LEVEL": "info"}
 				}`,
 			),
-			wantErr: "only v1 ConfigMap is allowed",
+			wantErr: "only v1 ConfigMap and networking.k8s.io/v1 Network policy is allowed",
 		},
 		{
 			name: "kind missing",
@@ -137,19 +152,22 @@ func TestCreateNamespaceClass(t *testing.T) {
 	}
 }
 
-func newNamespaceClass(name string, template string) *v1alpha1.NamespaceClass {
+func newNamespaceClass(name string, templates ...string) *v1alpha1.NamespaceClass {
+	resources := make([]v1alpha1.NamespaceClassResource, 0, len(templates))
+
+	for _, tpl := range templates {
+		resources = append(resources, v1alpha1.NamespaceClassResource{
+			Template: runtime.RawExtension{
+				Raw: []byte(tpl),
+			},
+		})
+	}
 	return &v1alpha1.NamespaceClass{
 		ObjectMeta: metav1.ObjectMeta{
 			Name: name,
 		},
 		Spec: v1alpha1.NamespaceClassSpec{
-			Resources: []v1alpha1.NamespaceClassResource{
-				{
-					Template: runtime.RawExtension{
-						Raw: []byte(template),
-					},
-				},
-			},
+			Resources: resources,
 		},
 	}
 }

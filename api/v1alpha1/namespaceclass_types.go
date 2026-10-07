@@ -26,10 +26,10 @@ import (
 type NamespaceClassResource struct {
 	// template is the full object definition to create
 	// the object, required apiVersion, kind and metadata.
-	// Only v1 config is allowed for now.
+	// Only v1 ConfigMap and networking.k8s.io/v1 Network policy is allowed for now.
 	// +kubebuilder:pruning:PreserveUnknownFields
 	// +kubebuilder:validation:EmbeddedResource
-	// +kubebuilder:validation:XValidation:rule="self.apiVersion == 'v1' && self.kind == 'ConfigMap'",message="only v1 ConfigMap is allowed"
+	// +kubebuilder:validation:XValidation:rule="(self.apiVersion == 'v1' && self.kind == 'ConfigMap') || (self.apiVersion == 'networking.k8s.io/v1' && self.kind == 'NetworkPolicy')",message="only v1 ConfigMap and networking.k8s.io/v1 Network policy is allowed"
 	// +kubebuilder:validation:XValidation:rule="has(self.metadata.name) && self.metadata.name != ''",message="template must set metadata.name"
 	Template runtime.RawExtension `json:"template"`
 }
@@ -39,6 +39,7 @@ type NamespaceClassSpec struct {
 	// resources lists the k8s objects created in each namespace
 	// for this namespace class.
 	// +optional
+	// +kubebuilder:validation:MaxItems=50
 	Resources []NamespaceClassResource `json:"resources,omitempty"`
 
 	// pruningOnDelete controls what happens to managed objects when this NamespaceClass
