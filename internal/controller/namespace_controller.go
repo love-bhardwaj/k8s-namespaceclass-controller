@@ -75,12 +75,14 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	log := logf.FromContext(ctx)
 	namespaceObj := &corev1.Namespace{}
 	if err := r.Get(ctx, req.NamespacedName, namespaceObj); err != nil {
-		log.Error(err, "reconcile get namespace via name", "name", req.NamespacedName)
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("get namespace: %w", err)
 	}
 
 	if !namespaceObj.DeletionTimestamp.IsZero() {
-		log.Info("namespace set for deletion skipping", "name", req.NamespacedName)
+		log.Info("Skipped Namespace being deleted")
 		return ctrl.Result{}, nil
 	}
 
@@ -94,16 +96,15 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 	// Has the namespaceclassname label, fetch the object
 	namespaceClassObj := &v1alpha1.NamespaceClass{}
 	if err := r.Get(ctx, client.ObjectKey{Name: namespaceClassName}, namespaceClassObj); err != nil {
-		log.Error(err, "get namespace class", "name", namespaceClassName)
 		if apierrors.IsNotFound(err) {
 			return ctrl.Result{}, nil
 		}
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("get namespaceclass %s: %w", namespaceClassName, err)
 	}
 
 	// Being deleted so leave it as it is.
 	if !namespaceClassObj.DeletionTimestamp.IsZero() {
-		log.Info("namespace class is set for deletion skipping", "name", namespaceClassName)
+		log.Info("Skipped NamespaceClass being deleted", "namespaceclass", namespaceClassName)
 		return ctrl.Result{}, nil
 	}
 
@@ -116,7 +117,7 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			Message:            strings.Join(errMsgs, ", "),
 			ObservedGeneration: namespaceClassObj.Generation,
 		}); err != nil {
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("set template valid after render failure: %w", err)
 		}
 		return ctrl.Result{}, reconcile.TerminalError(
 			fmt.Errorf(
@@ -139,7 +140,7 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			Message:            strings.Join(invalidObjects, ", "),
 			ObservedGeneration: namespaceClassObj.Generation,
 		}); err != nil {
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("set template valid after rejected objects: %w", err)
 		}
 	}
 	if len(invalidObjects) == 0 {
@@ -150,7 +151,7 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 			Message:            "All templates are valid",
 			ObservedGeneration: namespaceClassObj.Generation,
 		}); err != nil {
-			return ctrl.Result{}, err
+			return ctrl.Result{}, fmt.Errorf("set template valid after apply: %w", err)
 		}
 	}
 
@@ -280,7 +281,7 @@ func (r *NamespaceReconciler) prune(ctx context.Context, namespace string, keep 
 func (r *NamespaceReconciler) namespaces(ctx context.Context, obj client.Object) []reconcile.Request {
 	list := &corev1.NamespaceList{}
 	if err := r.List(ctx, list, client.MatchingLabels{classLabel: obj.GetName()}); err != nil {
-		logf.FromContext(ctx).Error(err, "list namespaces for custom resource namespaceclass", "name", obj.GetName())
+		logf.FromContext(ctx).Error(err, "Could not list namespaces for namespaceclass", "namespaceclass", obj.GetName())
 		return nil
 	}
 

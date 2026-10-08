@@ -21,6 +21,7 @@ import (
 	"errors"
 	"fmt"
 
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	"k8s.io/apimachinery/pkg/api/meta"
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrl "sigs.k8s.io/controller-runtime"
@@ -50,15 +51,17 @@ func (r *NamespaceClassReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 
 	namespaceClassObj := &v1alpha1.NamespaceClass{}
 	if err := r.Get(ctx, req.NamespacedName, namespaceClassObj); err != nil {
-		log.Error(err, "Get namespaceclass resource")
-		return ctrl.Result{}, client.IgnoreNotFound(err)
+		if apierrors.IsNotFound(err) {
+			return ctrl.Result{}, nil
+		}
+		return ctrl.Result{}, fmt.Errorf("get namespaceclass: %w", err)
 	}
 
 	if namespaceClassObj.DeletionTimestamp.IsZero() {
+		patch := client.MergeFrom(namespaceClassObj.DeepCopy())
 		if controllerutil.AddFinalizer(namespaceClassObj, namespaceClassFinalizer) {
-			if err := r.Update(ctx, namespaceClassObj); err != nil {
-				log.Error(err, "Add namespaceclass resource finalizer")
-				return ctrl.Result{}, client.IgnoreNotFound(err)
+			if err := r.Patch(ctx, namespaceClassObj, patch); client.IgnoreNotFound(err) != nil {
+				return ctrl.Result{}, fmt.Errorf("add finalizer to namespaceclass: %w", err)
 			}
 		}
 		return ctrl.Result{}, nil
@@ -69,14 +72,14 @@ func (r *NamespaceClassReconciler) Reconcile(ctx context.Context, req ctrl.Reque
 	}
 
 	if err := r.cleanup(ctx, namespaceClassObj); err != nil {
-		log.Error(err, "Cleanup namespaceclass managed resources")
-		return ctrl.Result{}, err
+		return ctrl.Result{}, fmt.Errorf("clean up namespaceclass managed objects: %w", err)
 	}
+	log.Info("Cleaned up managed objects", "pruningOnDelete", namespaceClassObj.Spec.PruningOnDelete)
 
+	patch := client.MergeFrom(namespaceClassObj.DeepCopy())
 	controllerutil.RemoveFinalizer(namespaceClassObj, namespaceClassFinalizer)
-	if err := r.Update(ctx, namespaceClassObj); err != nil {
-		log.Error(err, "Update namespaceclass object remove finalizer")
-		return ctrl.Result{}, err
+	if err := r.Patch(ctx, namespaceClassObj, patch); client.IgnoreNotFound(err) != nil {
+		return ctrl.Result{}, fmt.Errorf("remove finalizer from namespaceclass: %w", err)
 	}
 	return ctrl.Result{}, nil
 }
@@ -97,7 +100,7 @@ func (r *NamespaceClassReconciler) cleanup(
 			id := fmt.Sprintf("%T %s/%s", obj, obj.GetNamespace(), obj.GetName())
 			if namespaceClass.Spec.PruningOnDelete {
 				if err := r.Delete(ctx, obj); client.IgnoreNotFound(err) != nil {
-					errs = append(errs, fmt.Errorf("delete %s: %w", id, err))
+					errs = append(errs, fmt.Errorf("delete object %s: %w", id, err))
 				}
 				continue
 			}
@@ -106,7 +109,7 @@ func (r *NamespaceClassReconciler) cleanup(
 			delete(labels, managedByLabel)
 			obj.SetLabels(labels)
 			if err := r.Patch(ctx, obj, patch); client.IgnoreNotFound(err) != nil {
-				errs = append(errs, fmt.Errorf("release %s: %w", id, err))
+				errs = append(errs, fmt.Errorf("remove label patch %s: %w", id, err))
 			}
 		}
 	}
