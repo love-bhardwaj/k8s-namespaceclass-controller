@@ -284,6 +284,7 @@ var _ = Describe("Manager", Ordered, func() {
 				namespaceClassKeepOnDelete          = "e2e-keep-on-delete"
 				namespaceClassInvalidDataKey        = "e2e-invalid-data-key"
 				namespaceClassSecretTemplate        = "e2e-secret-template"
+				namespaceClassNetworkPolicy         = "e2e-network-policy"
 			)
 
 			// Namespaces for testing
@@ -293,12 +294,18 @@ var _ = Describe("Manager", Ordered, func() {
 				namespacePrune                 = "e2e-prune"
 				namespaceKeep                  = "e2e-keep"
 				namespaceInvalidDataKey        = "e2e-invalid-data-key"
+				namespaceNetworkPolicy         = "e2e-network-policy"
 			)
 
 			// config map names for testing
 			const (
 				configMapAppSettings = "app-settings"
 				configMapVPNSettings = "vpn-settings"
+			)
+
+			// network policy names for testing
+			const (
+				networkPolicyAllowWorldIngress = "allow-world-ingress"
 			)
 
 			BeforeAll(func() {
@@ -325,6 +332,8 @@ var _ = Describe("Manager", Ordered, func() {
 				Expect(err).NotTo(HaveOccurred())
 				_, err = kubectl("create", "namespace", namespaceInvalidDataKey)
 				Expect(err).NotTo(HaveOccurred())
+				_, err = kubectl("create", "namespace", namespaceNetworkPolicy)
+				Expect(err).NotTo(HaveOccurred())
 			})
 
 			AfterAll(func() {
@@ -337,6 +346,7 @@ var _ = Describe("Manager", Ordered, func() {
 					namespacePrune,
 					namespaceKeep,
 					namespaceInvalidDataKey,
+					namespaceNetworkPolicy,
 					"--ignore-not-found",
 					"--wait=false",
 				)
@@ -349,13 +359,14 @@ var _ = Describe("Manager", Ordered, func() {
 					namespaceClassPruneOnDelete,
 					namespaceClassKeepOnDelete,
 					namespaceClassInvalidDataKey,
+					namespaceClassNetworkPolicy,
 					"--ignore-not-found",
 					"--timeout=2m",
 				)
 			})
 
 			It("creates managed config maps when namespace is labeled", func() {
-				_, err := kubectl("label", "namespace", namespaceWebPortal, classLabel(namespaceClassPublicNetwork))
+				_, err := kubectl("label", "namespace", namespaceWebPortal, getClassLabel(namespaceClassPublicNetwork))
 				Expect(err).NotTo(HaveOccurred())
 
 				Eventually(func(g Gomega) {
@@ -416,7 +427,7 @@ var _ = Describe("Manager", Ordered, func() {
 					"label",
 					"namespace",
 					namespaceWebPortal,
-					classLabel(namespaceClassInternalNetwork),
+					getClassLabel(namespaceClassInternalNetwork),
 					"--overwrite",
 				)
 				Expect(err).NotTo(HaveOccurred())
@@ -445,7 +456,7 @@ var _ = Describe("Manager", Ordered, func() {
 					createConfigMap(configMapAppSettings, "info"),
 				))).To(Succeed())
 
-				_, err := kubectl("label", "namespace", namespaceKeep, classLabel(namespaceClassKeepOnDelete))
+				_, err := kubectl("label", "namespace", namespaceKeep, getClassLabel(namespaceClassKeepOnDelete))
 				Expect(err).NotTo(HaveOccurred())
 
 				Eventually(func(g Gomega) {
@@ -464,13 +475,13 @@ var _ = Describe("Manager", Ordered, func() {
 
 			It("prunes resources when namespaceclass resource deleted and pruning enabled", func() {
 				By("labeling a namespace for a custom resource with pruningOnDelete true")
-				Expect(applyManifest(withPruningOnDelete(
+				Expect(applyManifest(removePruneDeleted(
 					createNamespaceClass(
 						namespaceClassPruneOnDelete,
 						createConfigMap(configMapAppSettings, "info"),
 					)))).To(Succeed())
 
-				_, err := kubectl("label", "namespace", namespacePrune, classLabel(namespaceClassPruneOnDelete))
+				_, err := kubectl("label", "namespace", namespacePrune, getClassLabel(namespaceClassPruneOnDelete))
 				Expect(err).NotTo(HaveOccurred())
 
 				Eventually(func(g Gomega) {
@@ -495,7 +506,7 @@ metadata:
 					"label",
 					"namespace",
 					namespaceTemplateSetsNamespace,
-					classLabel(namespaceClassTemplateSetsNamespace),
+					getClassLabel(namespaceClassTemplateSetsNamespace),
 				)
 				Expect(err).NotTo(HaveOccurred())
 
@@ -513,7 +524,7 @@ metadata:
   name: bad-keys
 data:
   "bad key!": "foobar"`))).To(Succeed())
-				_, err := kubectl("label", "namespace", namespaceInvalidDataKey, classLabel(namespaceClassInvalidDataKey))
+				_, err := kubectl("label", "namespace", namespaceInvalidDataKey, getClassLabel(namespaceClassInvalidDataKey))
 				Expect(err).NotTo(HaveOccurred())
 
 				Eventually(func(g Gomega) {
@@ -532,10 +543,119 @@ metadata:
 stringData:
   password: changeme`))
 				Expect(err).To(HaveOccurred(), "the CRD should reject a Secret template")
-				Expect(err.Error()).To(ContainSubstring("only v1 ConfigMap is allowed"))
+				Expect(err.Error()).To(ContainSubstring("only v1 ConfigMap and networking.k8s.io/v1"))
 
 				_, err = kubectl("get", "namespaceclass", namespaceClassSecretTemplate)
 				Expect(err).To(HaveOccurred(), "the custom resource should not be stored")
+			})
+
+			It("works with network policy template", func() {
+				Expect(applyManifest(createNamespaceClass(
+					namespaceClassNetworkPolicy,
+					createNetworkPolicy(networkPolicyAllowWorldIngress, "0.0.0.0/0"),
+				))).To(Succeed())
+
+				_, err := kubectl("label", "namespace", namespaceNetworkPolicy, getClassLabel(namespaceClassNetworkPolicy))
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getNetworkPolicyCIDR(namespaceNetworkPolicy, networkPolicyAllowWorldIngress)).
+						To(Equal("0.0.0.0/0"))
+					g.Expect(getManagedObjects("networkpolicy", namespaceNetworkPolicy)).
+						To(ConsistOf(networkPolicyAllowWorldIngress))
+				}).Should(Succeed())
+			})
+
+			It("works for both config map and network policy template", func() {
+				Expect(applyManifest(createNamespaceClass(
+					namespaceClassNetworkPolicy,
+					createConfigMap(configMapAppSettings, "info"),
+					createNetworkPolicy(networkPolicyAllowWorldIngress, "0.0.0.0/0"),
+				))).To(Succeed())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getManagedConfigMaps(namespaceNetworkPolicy)).To(ConsistOf(configMapAppSettings))
+					g.Expect(getManagedObjects("networkpolicy", namespaceNetworkPolicy)).
+						To(ConsistOf(networkPolicyAllowWorldIngress))
+				}).Should(Succeed())
+			})
+
+			It("keeps a config map and a network policy with the same name", func() {
+				Expect(applyManifest(createNamespaceClass(
+					namespaceClassNetworkPolicy,
+					createConfigMap(configMapAppSettings, "info"),
+					createNetworkPolicy(networkPolicyAllowWorldIngress, "0.0.0.0/0"),
+					createNetworkPolicy(configMapAppSettings, "10.8.0.0/16"),
+				))).To(Succeed())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getManagedObjects("networkpolicy", namespaceNetworkPolicy)).
+						To(ConsistOf(networkPolicyAllowWorldIngress, configMapAppSettings))
+				}).Should(Succeed())
+
+				Consistently(func(g Gomega) {
+					g.Expect(getManagedConfigMaps(namespaceNetworkPolicy)).To(ConsistOf(configMapAppSettings))
+					g.Expect(getManagedObjects("networkpolicy", namespaceNetworkPolicy)).
+						To(ConsistOf(networkPolicyAllowWorldIngress, configMapAppSettings))
+				}, 10*time.Second).Should(Succeed())
+			})
+
+			It("restores network policy deleted by hand", func() {
+				_, err := kubectl("delete", "networkpolicy", networkPolicyAllowWorldIngress, "-n", namespaceNetworkPolicy)
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getNetworkPolicyCIDR(namespaceNetworkPolicy, networkPolicyAllowWorldIngress)).
+						To(Equal("0.0.0.0/0"))
+				}).Should(Succeed())
+			})
+
+			It("reverts a network policy edited by hand", func() {
+				_, err := kubectl("patch", "networkpolicy", networkPolicyAllowWorldIngress, "-n", namespaceNetworkPolicy,
+					"--type=json", "-p",
+					`[{"op":"replace","path":"/spec/ingress/0/from/0/ipBlock/cidr","value":"192.168.0.0/16"}]`)
+				Expect(err).NotTo(HaveOccurred())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getNetworkPolicyCIDR(namespaceNetworkPolicy, networkPolicyAllowWorldIngress)).
+						To(Equal("0.0.0.0/0"))
+				}).Should(Succeed())
+			})
+
+			It("prunes network policy removed from namespaceclass", func() {
+				Expect(applyManifest(createNamespaceClass(
+					namespaceClassNetworkPolicy,
+					createConfigMap(configMapAppSettings, "info"),
+				))).To(Succeed())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getManagedObjects("networkpolicy", namespaceNetworkPolicy)).To(BeEmpty())
+				}).Should(Succeed())
+
+				Expect(getManagedConfigMaps(namespaceNetworkPolicy)).
+					To(ConsistOf(configMapAppSettings), "config map should be kept")
+			})
+
+			It("prunes network policies when namespaceclass resource deleted and pruning enabled", func() {
+				Expect(applyManifest(removePruneDeleted(createNamespaceClass(
+					namespaceClassNetworkPolicy,
+					createConfigMap(configMapAppSettings, "info"),
+					createNetworkPolicy(networkPolicyAllowWorldIngress, "0.0.0.0/0"),
+				)))).To(Succeed())
+
+				Eventually(func(g Gomega) {
+					g.Expect(getManagedObjects("networkpolicy", namespaceNetworkPolicy)).
+						To(ConsistOf(networkPolicyAllowWorldIngress))
+				}).Should(Succeed())
+
+				_, err := kubectl("delete", "namespaceclass", namespaceClassNetworkPolicy, "--timeout=2m")
+				Expect(err).NotTo(HaveOccurred())
+
+				_, err = kubectl("get", "networkpolicy", networkPolicyAllowWorldIngress, "-n", namespaceNetworkPolicy)
+				Expect(err).To(HaveOccurred(), "network policy should be deleted")
+
+				_, err = kubectl("get", "configmap", configMapAppSettings, "-n", namespaceNetworkPolicy)
+				Expect(err).To(HaveOccurred(), "config map should be deleted")
 			})
 		})
 	})
@@ -544,9 +664,15 @@ stringData:
 // getManagedConfigMaps returns the config maps in the
 // given namespace that have the managed by label
 func getManagedConfigMaps(namespace string) ([]string, error) {
+	return getManagedObjects("configmap", namespace)
+}
+
+// getManagedObjects returns the names of objects of the given k8s
+// resource type in the namespace that have the managed by label.
+func getManagedObjects(resource string, namespace string) ([]string, error) {
 	out, err := kubectl(
 		"get",
-		"configmap",
+		resource,
 		"-n",
 		namespace,
 		"-l",
@@ -560,14 +686,28 @@ func getManagedConfigMaps(namespace string) ([]string, error) {
 	return utils.GetNonEmptyLines(out), nil
 }
 
+// getNetworkPolicyCIDR returns the first ingress ipBlock cidr of the
+// network policy with the given name in the provided namespace.
+func getNetworkPolicyCIDR(namespace string, name string) (string, error) {
+	return kubectl(
+		"get",
+		"networkpolicy",
+		name,
+		"-n",
+		namespace,
+		"-o",
+		"jsonpath={.spec.ingress[0].from[0].ipBlock.cidr}",
+	)
+}
+
 // getConfigMapField returns a json path field of the
 // config map with the given name in the provided namespace.
 func getConfigMapField(namespace string, configMapName string, jsonPath string) (string, error) {
 	return kubectl("get", "configmap", configMapName, "-n", namespace, "-o", "jsonpath="+jsonPath)
 }
 
-// classLabel provides the namespace label for the namespace class.
-func classLabel(name string) string {
+// getClassLabel provides the namespace label for the namespace class.
+func getClassLabel(name string) string {
 	return "namespaceclass.lovebhardwaj.io/name=" + name
 }
 
@@ -594,6 +734,23 @@ data:
   LOG_LEVEL: %s`, name, logLevel)
 }
 
+// createNetworkPolicy creates a test network policy template that allows
+// ingress to every pod in the namespace from cidr.
+func createNetworkPolicy(name string, cidr string) string {
+	return fmt.Sprintf(`apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: %s
+spec:
+  podSelector: {}
+  policyTypes:
+  - Ingress
+  ingress:
+  - from:
+    - ipBlock:
+        cidr: %s`, name, cidr)
+}
+
 // createNamespaceClass creates the namespace class template.
 func createNamespaceClass(name string, templates ...string) string {
 	var resources strings.Builder
@@ -613,14 +770,20 @@ spec:
 `, name, resources.String())
 }
 
-// getTemplatesValidReason returns the reason of the TemplatesValid condition of the namespace class name.
+// getTemplatesValidReason returns the reason of the 'TemplatesValid'
+// condition of the namespace class name.
 func getTemplatesValidReason(name string) (string, error) {
-	return kubectl("get", "namespaceclass", name, "-o",
-		`jsonpath={.status.conditions[?(@.type=="TemplatesValid")].reason}`)
+	return kubectl(
+		"get",
+		"namespaceclass",
+		name,
+		"-o",
+		`jsonpath={.status.conditions[?(@.type=="TemplatesValid")].reason}`,
+	)
 }
 
-// withPruningOnDelete sets spec.pruningOnDelete to true in a manifest from createNamespaceClass.
-func withPruningOnDelete(manifest string) string {
+// removePruneDeleted sets pruningOnDelete to true in a manifest.
+func removePruneDeleted(manifest string) string {
 	return strings.Replace(manifest, "spec:\n", "spec:\n  pruningOnDelete: true\n", 1)
 }
 
