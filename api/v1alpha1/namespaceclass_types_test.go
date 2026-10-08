@@ -17,17 +17,16 @@ limitations under the License.
 package v1alpha1_test
 
 import (
+	"fmt"
 	"os"
-	"path/filepath"
 	"testing"
 
-	"github.com/go-openapi/testify/v2/require"
 	"github.com/love-bhardwaj/k8s-namespaceclass-controller/api/v1alpha1"
+	"github.com/love-bhardwaj/k8s-namespaceclass-controller/internal/testenv"
 	"github.com/stretchr/testify/assert"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/apimachinery/pkg/runtime"
 	"sigs.k8s.io/controller-runtime/pkg/client"
-	"sigs.k8s.io/controller-runtime/pkg/envtest"
 )
 
 const testConfigMapTemplate = `{
@@ -44,28 +43,43 @@ const testNetworkPolicyTemplate = `{
 	"spec": {"podSelector": {}}
 }`
 
-func TestCreateNamespaceClass(t *testing.T) {
-	wd, err := os.Getwd()
-	require.NoError(t, err)
-	env := &envtest.Environment{
-		BinaryAssetsDirectory: filepath.Join(wd, "../../bin/k8s/1.37.0-darwin-arm64"),
-		CRDDirectoryPaths:     []string{filepath.Join(wd, "../../config", "crd", "bases")},
-		ErrorIfCRDPathMissing: true,
+var k8sClient client.Client
+
+func TestMain(m *testing.M) {
+	code := 1
+	defer func() { os.Exit(code) }()
+
+	env, err := testenv.New()
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
 	}
 	cfg, err := env.Start()
-	require.NoError(t, err)
-	t.Cleanup(func() {
-		err := env.Stop()
-		require.NoError(t, err)
-	})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "start envtest:", err)
+		return
+	}
+	defer func() {
+		if err := env.Stop(); err != nil {
+			fmt.Fprintln(os.Stderr, "stop envtest:", err)
+		}
+	}()
 
 	scheme := runtime.NewScheme()
-	err = v1alpha1.AddToScheme(scheme)
-	require.NoError(t, err)
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
+	k8sClient, err = client.New(cfg, client.Options{Scheme: scheme})
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return
+	}
 
-	k8sClient, err := client.New(cfg, client.Options{Scheme: scheme})
-	require.NoError(t, err)
+	code = m.Run()
+}
 
+func TestCreateNamespaceClass(t *testing.T) {
 	tests := []struct {
 		name           string
 		namespaceClass *v1alpha1.NamespaceClass
