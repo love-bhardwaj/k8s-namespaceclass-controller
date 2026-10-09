@@ -142,17 +142,22 @@ func (r *NamespaceReconciler) Reconcile(ctx context.Context, req ctrl.Request) (
 		}); err != nil {
 			return ctrl.Result{}, fmt.Errorf("set template valid after rejected objects: %w", err)
 		}
+		return ctrl.Result{}, reconcile.TerminalError(
+			fmt.Errorf(
+				"resource %s has rejected objects: %s",
+				namespaceClassObj.Name,
+				strings.Join(invalidObjects, ", "),
+			),
+		)
 	}
-	if len(invalidObjects) == 0 {
-		if err := r.setCondition(ctx, namespaceClassObj, metav1.Condition{
-			Type:               typeTemplateValid,
-			Status:             metav1.ConditionTrue,
-			Reason:             reasonValidTemplate,
-			Message:            "All templates are valid",
-			ObservedGeneration: namespaceClassObj.Generation,
-		}); err != nil {
-			return ctrl.Result{}, fmt.Errorf("set template valid after apply: %w", err)
-		}
+	if err := r.setCondition(ctx, namespaceClassObj, metav1.Condition{
+		Type:               typeTemplateValid,
+		Status:             metav1.ConditionTrue,
+		Reason:             reasonValidTemplate,
+		Message:            "All templates are valid",
+		ObservedGeneration: namespaceClassObj.Generation,
+	}); err != nil {
+		return ctrl.Result{}, fmt.Errorf("set template valid after apply: %w", err)
 	}
 
 	return ctrl.Result{}, r.prune(ctx, namespaceObj.Name, resourceObjects)
