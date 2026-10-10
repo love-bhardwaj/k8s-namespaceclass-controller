@@ -42,12 +42,12 @@ import (
 	"github.com/love-bhardwaj/k8s-namespaceclass-controller/api/v1alpha1"
 )
 
-func TestNamespaceReconciler_Reconcile(t *testing.T) {
-	const (
-		testNamespace      = "test-namespace"
-		testNamespaceClass = "test-class"
-	)
+const (
+	testNamespace      = "test-namespace"
+	testNamespaceClass = "test-class"
+)
 
+func TestNamespaceReconciler_Reconcile(t *testing.T) {
 	errorInterceptor := func(
 		_ context.Context,
 		_ client.WithWatch,
@@ -189,7 +189,33 @@ func TestNamespaceReconciler_Reconcile(t *testing.T) {
 			},
 		},
 		{
-			name: "namespace class not found",
+			name: "namespace does not have class label is pruned",
+			setup: func(t *testing.T) client.Client {
+				return fake.NewClientBuilder().
+					WithObjects(&corev1.Namespace{
+						ObjectMeta: metav1.ObjectMeta{Name: testNamespace},
+					}).
+					WithInterceptorFuncs(interceptor.Funcs{
+						Apply: applyNotCalledInterceptor(t),
+						DeleteAllOf: func(
+							_ context.Context,
+							_ client.WithWatch,
+							_ client.Object,
+							opts ...client.DeleteAllOfOption,
+						) error {
+							o := &client.DeleteAllOfOptions{}
+							o.ApplyOptions(opts)
+							assert.Equal(t, testNamespace, o.Namespace)
+							assert.Equal(t, managedByLabel, o.LabelSelector.String())
+							assert.Empty(t, o.FieldSelector.String(), "all managed objects should be pruned")
+							return nil
+						},
+					}).
+					Build()
+			},
+		},
+		{
+			name: "namespaceclass not found",
 			setup: func(t *testing.T) client.Client {
 				s := runtime.NewScheme()
 				require.NoError(t, scheme.AddToScheme(s))
@@ -222,7 +248,7 @@ func TestNamespaceReconciler_Reconcile(t *testing.T) {
 			},
 		},
 		{
-			name: "get namespace class error",
+			name: "get namespaceclass error",
 			setup: func(_ *testing.T) client.Client {
 				return fake.NewClientBuilder().
 					WithObjects(&corev1.Namespace{
@@ -700,4 +726,104 @@ func TestNamespaceReconciler_Reconcile(t *testing.T) {
 			assert.Equal(t, ctrl.Result{}, res)
 		})
 	}
+}
+
+func TestNamespaceReconciler_namespaces(t *testing.T) {
+	tests := []struct {
+		name  string
+		setup func(t *testing.T) client.Client
+		want  []reconcile.Request
+	}{
+		{
+			name: "failed to list namespace with class label",
+			setup: func(_ *testing.T) client.Client {
+				return fake.NewClientBuilder().
+					WithInterceptorFuncs(interceptor.Funcs{
+						List: func(
+							_ context.Context,
+							_ client.WithWatch,
+							_ client.ObjectList,
+							_ ...client.ListOption,
+						) error {
+							return errors.New("connection refused")
+						},
+					}).
+					Build()
+			},
+		},
+		{
+			name: "return reconcile request for all namespaces with class label",
+			setup: func(_ *testing.T) client.Client {
+				return fake.NewClientBuilder().
+					WithObjects(
+						&corev1.Namespace{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:   testNamespace,
+								Labels: map[string]string{classLabel: testNamespaceClass},
+							},
+						},
+						&corev1.Namespace{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:   "test-second-namespace",
+								Labels: map[string]string{classLabel: testNamespaceClass},
+							},
+						},
+						&corev1.Namespace{
+							ObjectMeta: metav1.ObjectMeta{
+								Name:   "test-other-class-namespace",
+								Labels: map[string]string{classLabel: "test-other-class"},
+							},
+						},
+						&corev1.Namespace{
+							ObjectMeta: metav1.ObjectMeta{Name: "test-unlabeled-namespace"},
+						},
+					).
+					Build()
+			},
+			want: []reconcile.Request{
+				{
+					NamespacedName: types.NamespacedName{
+						Name: testNamespace,
+					},
+				},
+				{
+					NamespacedName: types.NamespacedName{
+						Name: "test-second-namespace",
+					},
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			c := tt.setup(t)
+			nsr := &NamespaceReconciler{Client: c, Scheme: c.Scheme()}
+
+			got := nsr.namespaces(t.Context(), &v1alpha1.NamespaceClass{
+				ObjectMeta: metav1.ObjectMeta{Name: testNamespaceClass},
+			})
+			assert.ElementsMatch(t, tt.want, got)
+		})
+	}
+}
+
+func TestNamespaceOf(t *testing.T) {
+	got := namespaceOf(t.Context(), &corev1.ConfigMap{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      "test-config-map",
+			Namespace: testNamespace,
+		},
+	})
+	assert.Equal(
+		t,
+		[]reconcile.Request{
+			{
+				NamespacedName: types.NamespacedName{
+					Name: testNamespace,
+				},
+			},
+		},
+		got,
+	)
 }
