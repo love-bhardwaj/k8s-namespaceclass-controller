@@ -43,8 +43,11 @@ import (
 )
 
 const (
-	testNamespace      = "test-namespace"
-	testNamespaceClass = "test-class"
+	testNamespace       = "test-namespace"
+	testSecondNamespace = "test-second-namespace"
+	testNamespaceClass  = "test-class"
+	testConfigMap       = "test-config-map"
+	testGroup           = "test.example.io"
 )
 
 func TestNamespaceReconciler_Reconcile(t *testing.T) {
@@ -66,7 +69,7 @@ func TestNamespaceReconciler_Reconcile(t *testing.T) {
 	) error {
 		return apierrors.NewInvalid(
 			schema.GroupKind{Kind: "ConfigMap"},
-			"test-config-map",
+			testConfigMap,
 			field.ErrorList{field.Invalid(field.NewPath("data"), "bad key!", "invalid key")},
 		)
 	}
@@ -428,7 +431,7 @@ func TestNamespaceReconciler_Reconcile(t *testing.T) {
 						) error {
 							named, ok := obj.(interface{ GetName() string })
 							require.True(t, ok)
-							assert.Equal(t, "test-config-map", named.GetName())
+							assert.Equal(t, testConfigMap, named.GetName())
 							return nil
 						},
 						SubResourceUpdate: statusUpdateInterceptor(
@@ -659,7 +662,7 @@ func TestNamespaceReconciler_Reconcile(t *testing.T) {
 								GetLabels() map[string]string
 							})
 							require.True(t, ok)
-							assert.Equal(t, "test-config-map", applied.GetName())
+							assert.Equal(t, testConfigMap, applied.GetName())
 							assert.Equal(t, testNamespace, applied.GetNamespace())
 							assert.Equal(t, testNamespaceClass, applied.GetLabels()[managedByLabel])
 							return nil
@@ -764,7 +767,7 @@ func TestNamespaceReconciler_namespaces(t *testing.T) {
 						},
 						&corev1.Namespace{
 							ObjectMeta: metav1.ObjectMeta{
-								Name:   "test-second-namespace",
+								Name:   testSecondNamespace,
 								Labels: map[string]string{classLabel: testNamespaceClass},
 							},
 						},
@@ -788,7 +791,7 @@ func TestNamespaceReconciler_namespaces(t *testing.T) {
 				},
 				{
 					NamespacedName: types.NamespacedName{
-						Name: "test-second-namespace",
+						Name: testSecondNamespace,
 					},
 				},
 			},
@@ -811,7 +814,7 @@ func TestNamespaceReconciler_namespaces(t *testing.T) {
 func TestNamespaceOf(t *testing.T) {
 	got := namespaceOf(t.Context(), &corev1.ConfigMap{
 		ObjectMeta: metav1.ObjectMeta{
-			Name:      "test-config-map",
+			Name:      testConfigMap,
 			Namespace: testNamespace,
 		},
 	})

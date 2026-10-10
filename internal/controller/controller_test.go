@@ -46,7 +46,7 @@ func TestCheckManagedKinds(t *testing.T) {
 			setup: func(_ *testing.T) *runtime.Scheme {
 				s := runtime.NewScheme()
 				s.AddKnownTypeWithName(
-					schema.GroupVersionKind{Group: "test.example.io", Version: "v1", Kind: "ConfigMap"},
+					schema.GroupVersionKind{Group: testGroup, Version: "v1", Kind: "ConfigMap"},
 					&corev1.ConfigMap{},
 				)
 				return s
